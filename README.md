@@ -19,6 +19,12 @@
 1. (Recommended) create a venv
 2. `pip install -r requirements.txt`
 
+## Use
+
+`python video_transcriber.py` for GUI mode
+
+`python video_transcriber.py --input FILE --output FILE --diarize --hf_token TOKEN --csv` for CLI mode
+
 ## Note
 
 This app was extensively written with AI. Please let me know of any serious issues or glaring omissions.
