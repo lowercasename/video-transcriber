@@ -2,6 +2,7 @@
 import argparse
 import datetime
 import os
+import shutil
 import tempfile
 import json
 from pathlib import Path
@@ -15,13 +16,32 @@ import json
 
 
 def extract_audio(video_path, output_audio_path=None):
-    """Extract audio from a video file using moviepy."""
+    """Extract audio from a video file using moviepy or copy WAV file directly."""
+    print(f"Processing audio from {video_path}...")
+
+    # Check if the file is already a WAV file
+    if video_path.lower().endswith(".wav"):
+        if output_audio_path is None:
+            # Create a temporary file with .wav extension
+            temp_dir = tempfile.gettempdir()
+            wav_filename = Path(video_path).stem
+            output_audio_path = os.path.join(temp_dir, f"{wav_filename}.wav")
+
+            # Copy the WAV file to the temporary location
+            shutil.copy2(video_path, output_audio_path)
+            print(f"Using WAV file directly: {output_audio_path}")
+        else:
+            # If output path is specified, just copy the file
+            shutil.copy2(video_path, output_audio_path)
+            print(f"Copied WAV file to {output_audio_path}")
+
+        return output_audio_path
+
+    # For video files, extract audio using moviepy
     try:
         from moviepy import VideoFileClip
     except ImportError:
         raise ImportError("moviepy is required. Install it with: pip install moviepy")
-
-    print(f"Extracting audio from {video_path}...")
 
     if output_audio_path is None:
         # Create a temporary file with .wav extension (better for diarization)
@@ -40,30 +60,69 @@ def extract_audio(video_path, output_audio_path=None):
     return output_audio_path
 
 
+# def extract_audio(video_path, output_audio_path=None):
+#     """Extract audio from a video file using moviepy."""
+#     try:
+#         from moviepy import VideoFileClip
+#     except ImportError:
+#         raise ImportError("moviepy is required. Install it with: pip install moviepy")
+
+#     print(f"Extracting audio from {video_path}...")
+
+#     if output_audio_path is None:
+#         # Create a temporary file with .wav extension (better for diarization)
+#         temp_dir = tempfile.gettempdir()
+#         video_filename = Path(video_path).stem
+#         output_audio_path = os.path.join(temp_dir, f"{video_filename}.wav")
+
+#     # Extract the audio
+#     with VideoFileClip(video_path) as video:
+#         audio = video.audio
+#         if audio is None:
+#             raise ValueError(f"No audio track found in {video_path}")
+#         audio.write_audiofile(output_audio_path, logger=None)
+
+#     print(f"Audio extracted to {output_audio_path}")
+#     return output_audio_path
+
+
 def transcribe_with_whisper(audio_path, model_size="base", language=None):
     """
     Transcribe audio using the Whisper model with timestamps.
     """
     try:
-        import whisper
+        # import whisper
+        from faster_whisper import WhisperModel
     except ImportError:
         raise ImportError("whisper is required.")
 
     print(f"Loading Whisper model ({model_size})...")
-    model = whisper.load_model(model_size)
+    # model = whisper.load_model(model_size)
+    model = WhisperModel(model_size, device="cpu")
 
     print("Transcribing with Whisper...")
     options = {
-        "verbose": False,
-        "fp16": False,
+        # "verbose": False,
+        # "fp16": False,
+        # "condition_on_previous_text": False,
+        # "no_speech_threshold": 0.1,
+        "beam_size": 5,
+        # "vad_filter": True,
+        # "condition_on_previous_text": False,
     }
 
     if language:
         options["language"] = language
 
-    result = model.transcribe(audio_path, **options)
+    segments, info = model.transcribe(audio_path, **options)
 
-    return result
+    print(
+        "Detected language '%s' with probability %f"
+        % (info.language, info.language_probability)
+    )
+
+    segments = list(segments)
+    return segments
 
 
 def perform_diarization(audio_path, num_speakers=None, hf_token=None):
@@ -122,10 +181,10 @@ def merge_whisper_and_diarization(whisper_result, diarization, tolerance=0.5):
         )
 
     # For each whisper segment, find the corresponding speaker
-    for segment in whisper_result["segments"]:
-        segment_start = segment["start"]
-        segment_end = segment["end"]
-        segment_text = segment["text"]
+    for segment in whisper_result:
+        segment_start = segment.start
+        segment_end = segment.end
+        segment_text = segment.text
 
         # Find speakers that overlap with this segment
         speakers_in_segment = []
@@ -164,12 +223,12 @@ def whisper_to_segments(whisper_result):
     Convert whisper result to a standard segment format (without speaker info)
     """
     segments = []
-    for segment in whisper_result["segments"]:
+    for segment in whisper_result:
         segments.append(
             {
-                "start": segment["start"],
-                "end": segment["end"],
-                "text": segment["text"],
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
                 "speaker": "UNKNOWN",
             }
         )
@@ -447,7 +506,12 @@ class TranscriptionApp:
         self.load_settings()
 
     def browse_video(self):
-        filetypes = [("Video files", "*.mp4 *.mov"), ("All files", "*.*")]
+        filetypes = [
+            ("Audio/Video files", "*.mp4 *.mov *.wav"),
+            ("Video files", "*.mp4 *.mov"),
+            ("Audio files", "*.wav"),
+            ("All files", "*.*"),
+        ]
 
         # Use last directory if available
         initial_dir = ""
@@ -739,7 +803,9 @@ def main():
     parser.add_argument(
         "--gui", action="store_true", help="Launch the graphical user interface"
     )
-    parser.add_argument("--input", help="Path to the input video file (mp4 or mov)")
+    parser.add_argument(
+        "--input", help="Path to the input video file (wav, mp4 or mov)"
+    )
 
     # Parse just the gui flag first
     args, _ = parser.parse_known_args()
@@ -807,9 +873,9 @@ def main():
             print(f"Error: Input file '{args.input}' does not exist.")
             return
 
-        if not args.input.lower().endswith((".mp4", ".mov")):
+        if not args.input.lower().endswith((".mp4", ".mov", ".wav")):
             print(
-                f"Warning: Input file '{args.input}' does not have a .mp4 or .mov extension."
+                f"Warning: Input file '{args.input}' does not have a .wav, .mp4 or .mov extension."
             )
 
         # Validate HF token if diarization is requested
